@@ -18,6 +18,73 @@ different in order to consume less memory. In particular, it relies on
 a tracing garbage collector, the VM does not use the CPU stack and
 strings are stored in UTF-8.
 
+---
+
+## Xteink X4 — JavaScript App Platform
+
+This fork adds a complete JavaScript app runtime for the
+**[Xteink X4](https://www.good-display.com/product/457.html)** — a
+4.3″ e-ink reader running an ESP32-C3 (RISC-V 32-bit, 160 MHz).
+
+### Requirements
+
+| Constraint | Limit |
+|------------|-------|
+| Script / bytecode file | ≤ 32 KB |
+| JS working memory | ≤ 64 KB |
+| File-read chunk size | 4 096 bytes recommended |
+
+### App format
+
+- `.js` — raw JavaScript source (parsed on-device)
+- `.app` — MQuickJS 32-bit compiled bytecode (faster, preferred for distribution)
+
+Place app files in **`SDCARD/apps/`** on the microSD card.
+
+### Quick start
+
+```sh
+# Build the host-side compiler
+make mqjs
+
+# Generate the hardware stdlib header
+make xteink_stdlib.h
+
+# Check your app fits within the 32 KB limit
+./mqjs --xteink --check examples/hello_world.js
+
+# Compile to an .app bytecode file
+./mqjs --xteink -o hello_world.app examples/hello_world.js
+```
+
+### Documentation
+
+- **[Getting Started](docs/GETTING_STARTED.md)** — toolchain setup, flashing, SD card prep
+- **[JavaScript API Reference](docs/JAVASCRIPT_API.md)** — `Display`, `Input`, `FS`, `System`, `WiFi`, `HTTP`
+- **[App Development Guide](docs/APP_DEVELOPMENT.md)** — memory management, chunked I/O, gc()
+- **[Example Apps](docs/EXAMPLES.md)** — annotated walkthrough of the five bundled examples
+
+### Example apps (`examples/`)
+
+| App | Description |
+|-----|-------------|
+| `hello_world.js` | Draw "Hello, World!" and wait for a key |
+| `button_demo.js` | Show which button was last pressed |
+| `clock.js` | Running digital clock with partial refresh |
+| `file_viewer.js` | Browse and display `.txt` files in 4 KB chunks |
+| `image_viewer.js` | Render a 1-bit BMP from the SD card row-by-row |
+
+### New compiler flags
+
+| Flag | Description |
+|------|-------------|
+| `--xteink` | Implies `-m32` + `--no-column`; reports size; enforces 32 KB limit |
+| `--check` | Size-check only — compile to memory, report, no file written (requires `--xteink`) |
+
+---
+
+
+
 ## REPL
 
 The REPL is `mqjs`. Usage:

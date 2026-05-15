@@ -1,6 +1,7 @@
 #CONFIG_PROFILE=y
 #CONFIG_X86_32=y
 #CONFIG_ARM32=y
+#CONFIG_RISCV32=y
 #CONFIG_WIN32=y
 #CONFIG_SOFTFLOAT=y
 #CONFIG_ASAN=y
@@ -11,6 +12,12 @@ CONFIG_SMALL=y
 
 ifdef CONFIG_ARM32
 CROSS_PREFIX=arm-linux-gnu-
+endif
+
+ifdef CONFIG_RISCV32
+# Espressif RISC-V toolchain (riscv32-esp-elf-gcc).
+# Install via: idf_tools.py install riscv32-esp-elf
+CROSS_PREFIX=riscv32-esp-elf-
 endif
 
 ifdef CONFIG_WIN32
@@ -35,6 +42,10 @@ HOST_CFLAGS+=-Werror
 endif
 ifdef CONFIG_ARM32
 CFLAGS+=-mthumb
+endif
+
+ifdef CONFIG_RISCV32
+CFLAGS+=-march=rv32imc -mabi=ilp32
 endif
 ifdef CONFIG_SMALL
 CFLAGS+=-Os
@@ -74,11 +85,14 @@ endif
 ifdef CONFIG_ARM32
 MQJS_BUILD_FLAGS=-m32
 endif
+ifdef CONFIG_RISCV32
+MQJS_BUILD_FLAGS=-m32
+endif
 
 PROGS=mqjs$(EXE) example$(EXE)
-TEST_PROGS=dtoa_test libm_test 
+TEST_PROGS=dtoa_test libm_test
 
-all: $(PROGS)
+all: $(PROGS) xteink_stdlib.h
 
 MQJS_OBJS=mqjs.o readline_tty.o readline.o mquickjs.o dtoa.o libm.o cutils.o
 LIBS=-lm
@@ -98,6 +112,17 @@ mqjs_stdlib.h: mqjs_stdlib
 	./mqjs_stdlib $(MQJS_BUILD_FLAGS) > $@
 
 mqjs.o: mqjs_stdlib.h
+
+# Xteink X4 stdlib (builds a superset of the base stdlib plus hardware APIs)
+xteink_stdlib: xteink/xteink_stdlib.host.o mquickjs_build.host.o
+	$(HOST_CC) $(HOST_LDFLAGS) -o $@ $^
+
+xteink/xteink_stdlib.host.o: xteink/xteink_stdlib.c \
+	xteink/xteink_config.h mqjs_stdlib.c mquickjs_build.h
+	$(HOST_CC) $(HOST_CFLAGS) -I. -Ixteink -c -o $@ $<
+
+xteink_stdlib.h: xteink_stdlib
+	./xteink_stdlib $(MQJS_BUILD_FLAGS) > $@
 
 # C API example
 example.o: example_stdlib.h
@@ -147,6 +172,6 @@ rempio2_test: tests/rempio2_test.o libm.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 clean:
-	rm -f *.o *.d *~ tests/*.o tests/*.d tests/*~ test_builtin.bin mqjs_stdlib mqjs_stdlib.h mquickjs_build_atoms mquickjs_atom.h mqjs_example example_stdlib example_stdlib.h $(PROGS) $(TEST_PROGS)
+	rm -f *.o *.d *~ tests/*.o tests/*.d tests/*~ test_builtin.bin mqjs_stdlib mqjs_stdlib.h mquickjs_build_atoms mquickjs_atom.h mqjs_example example_stdlib example_stdlib.h xteink_stdlib xteink_stdlib.h xteink/xteink_stdlib.host.o $(PROGS) $(TEST_PROGS)
 
 -include $(wildcard *.d)
