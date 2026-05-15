@@ -426,7 +426,7 @@ static void compile_file(const char *filename, const char *outfilename,
     if (xteink_mode) {
         size_t total = (size_t)hdr_len + (size_t)data_len;
         size_t limit = 32u * 1024u;
-        fprintf(stderr, "Bytecode size: %zu bytes  (%.1f KB / 32 KB limit)\n",
+        fprintf(stderr, "Bytecode size: %zu bytes (%.1f KB / 32 KB limit)\n",
                 total, (double)total / 1024.0);
         if (total > limit) {
             fprintf(stderr,
