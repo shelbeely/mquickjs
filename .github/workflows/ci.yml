@@ -4,10 +4,15 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build host tools and run tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -54,6 +59,8 @@ jobs:
   firmware-build:
     name: Build ESP32-C3 firmware (optional)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Run only when IDF_VER env is available; mark as non-blocking
     # Uncomment 'continue-on-error: false' once an IDF runner is configured.
     continue-on-error: true

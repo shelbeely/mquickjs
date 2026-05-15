@@ -13,6 +13,10 @@
 #include <stdlib.h>
 
 #include "xteink_hal.h"
+/* Private MQuickJS internals for typed-array byte-pointer access.
+ * This is valid because xteink_hal.c is compiled as part of the same
+ * firmware build that includes mquickjs.c. */
+#include "../mquickjs_priv.h"
 
 #ifdef IDF_VER
 /* ---- ESP-IDF includes ------------------------------------------------ */
@@ -38,8 +42,44 @@ static const char *TAG = "xteink_hal";
 #endif /* IDF_VER */
 
 /* ======================================================================
- * Internal state
+ * Internal typed-array helpers (require mquickjs_priv.h)
  * ====================================================================== */
+
+/*
+ * Create a JS Uint8Array and copy n bytes from src into its backing buffer.
+ * Returns JS_EXCEPTION on allocation failure.
+ */
+static JSValue js_new_uint8array(JSContext *ctx, const uint8_t *src, size_t n)
+{
+    /* Call Uint8Array(n) via the private constructor */
+    JSValue len_arg = JS_NewUint32(ctx, (uint32_t)n);
+    JSValue ua = js_typed_array_constructor(ctx, NULL, 1, &len_arg,
+                                             JS_CLASS_UINT8_ARRAY);
+    if (JS_IsException(ua)) return ua;
+
+    /* Get raw byte pointer from the typed array's backing buffer */
+    JSObject *ta_obj  = (JSObject *)JS_VALUE_TO_PTR(ua);
+    JSObject *ab_obj  = (JSObject *)JS_VALUE_TO_PTR(ta_obj->u.typed_array.buffer);
+    JSByteArray *ba   = (JSByteArray *)JS_VALUE_TO_PTR(ab_obj->u.array_buffer.byte_buffer);
+    memcpy(ba->buf + ta_obj->u.typed_array.offset, src, n);
+    return ua;
+}
+
+/*
+ * Get the raw byte pointer and length from a Uint8Array.
+ * Returns NULL if val is not a Uint8Array.
+ */
+static uint8_t *js_get_uint8array_buf(JSContext *ctx, JSValue val, size_t *out_len)
+{
+    if (JS_GetClassID(ctx, val) != JS_CLASS_UINT8_ARRAY) return NULL;
+    JSObject *ta_obj  = (JSObject *)JS_VALUE_TO_PTR(val);
+    JSObject *ab_obj  = (JSObject *)JS_VALUE_TO_PTR(ta_obj->u.typed_array.buffer);
+    JSByteArray *ba   = (JSByteArray *)JS_VALUE_TO_PTR(ab_obj->u.array_buffer.byte_buffer);
+    if (out_len) *out_len = ta_obj->u.typed_array.len;
+    return ba->buf + ta_obj->u.typed_array.offset;
+}
+
+
 
 static int  g_draw_color = XTEINK_COLOR_BLACK;
 
@@ -176,8 +216,10 @@ void hal_display_draw_text(int x, int y, const char *text, int font_size)
 #ifdef IDF_VER
     /* Minimal 1-bit monochrome font renderer.
      * For a production build replace with a proper font rasteriser
-     * (e.g. FreeType, u8g2, or a pre-rasterised bitmap font). */
-    (void)font_size; /* TODO: honour font_size */
+     * (e.g. FreeType, u8g2, or a pre-rasterised bitmap font).
+     * font_size is accepted as a parameter for API compatibility but only
+     * a single size is rendered until a bitmap font table is integrated. */
+    (void)font_size;
     const uint8_t pixel = (g_draw_color == XTEINK_COLOR_BLACK) ? 0 : 0xFF;
     /* Single-pixel placeholder: stamp the first byte of each character */
     for (int i = 0; text[i]; i++) {
@@ -367,7 +409,8 @@ void hal_system_sleep(uint32_t ms)
 int hal_system_battery(void)
 {
 #ifdef IDF_VER
-    /* TODO: read ADC connected to battery voltage divider */
+    /* TODO: read ADC connected to battery voltage divider.
+     * Returns 100 as a placeholder until ADC calibration is implemented. */
     return 100;
 #else
     return 100;
@@ -542,19 +585,16 @@ JSValue js_display_draw_bitmap(JSContext *ctx, JSValue *this_val,
                                 int argc, JSValue *argv)
 {
     int x, y, w, h;
+    uint8_t *data;
+    size_t data_len;
     (void)this_val;
     if (argc < 5) return JS_ThrowTypeError(ctx, "drawBitmap needs 5 args");
     if (get_int_arg(ctx, argv, 0, &x) || get_int_arg(ctx, argv, 1, &y) ||
         get_int_arg(ctx, argv, 3, &w) || get_int_arg(ctx, argv, 4, &h))
         return JS_EXCEPTION;
-    if (JS_GetClassID(ctx, argv[2]) != JS_CLASS_UINT8_ARRAY)
-        return JS_ThrowTypeError(ctx, "drawBitmap: data must be Uint8Array");
-    /* argv[2] is the Uint8Array; extract its backing buffer pointer */
-    JSValue buf_val = JS_GetPropertyStr(ctx, argv[2], "buffer");
-    (void)buf_val; /* ArrayBuffer backing; access via opaque in a real impl */
-    /* TODO: access the raw byte pointer from the ArrayBuffer once the
-     * JS engine exposes a typed-array data pointer API */
-    hal_display_draw_bitmap(x, y, NULL, 0, w, h);
+    data = js_get_uint8array_buf(ctx, argv[2], &data_len);
+    if (!data) return JS_ThrowTypeError(ctx, "drawBitmap: data must be Uint8Array");
+    hal_display_draw_bitmap(x, y, data, data_len, w, h);
     return JS_UNDEFINED;
 }
 
@@ -643,9 +683,22 @@ JSValue js_fs_read(JSContext *ctx, JSValue *this_val,
                    int argc, JSValue *argv)
 {
     /* FS.read(fd, buffer:Uint8Array, offset, length) → bytes_read */
-    (void)this_val; (void)argc; (void)argv;
-    /* TODO: typed-array data pointer access */
-    return JS_NewInt32(ctx, 0);
+    int fd, offset, length;
+    uint8_t *buf;
+    size_t buf_len;
+    (void)this_val;
+    if (argc < 4 ||
+        get_int_arg(ctx, argv, 0, &fd)     ||
+        get_int_arg(ctx, argv, 2, &offset) ||
+        get_int_arg(ctx, argv, 3, &length))
+        return JS_EXCEPTION;
+    buf = js_get_uint8array_buf(ctx, argv[1], &buf_len);
+    if (!buf) return JS_ThrowTypeError(ctx, "FS.read: buffer must be Uint8Array");
+    if (offset < 0 || length < 0 || (size_t)(offset + length) > buf_len)
+        return JS_ThrowRangeError(ctx, "FS.read: offset/length out of bounds");
+    FILE *f = (FILE *)(uintptr_t)(unsigned int)fd;
+    int n = (int)fread(buf + offset, 1, (size_t)length, f);
+    return JS_NewInt32(ctx, n);
 }
 
 JSValue js_fs_read_chunk(JSContext *ctx, JSValue *this_val,
@@ -654,6 +707,8 @@ JSValue js_fs_read_chunk(JSContext *ctx, JSValue *this_val,
     /* FS.readChunk(fd, size?) → Uint8Array | null */
     int fd;
     uint32_t size = XTEINK_CHUNK_SIZE;
+    uint8_t c_buf[XTEINK_CHUNK_SIZE];
+    size_t n;
     (void)this_val;
     if (argc < 1 || get_int_arg(ctx, argv, 0, &fd)) return JS_EXCEPTION;
     if (argc >= 2) {
@@ -661,22 +716,32 @@ JSValue js_fs_read_chunk(JSContext *ctx, JSValue *this_val,
         if (size > XTEINK_CHUNK_SIZE) size = XTEINK_CHUNK_SIZE;
     }
 
-    /* Allocate a Uint8Array to hold the chunk */
-    JSValue ab = JS_NewArrayBuffer(ctx, NULL, size, NULL, NULL, FALSE);
-    if (JS_IsException(ab)) return ab;
-    /* TODO: once JS_GetArrayBufferSize/ptr API is available, use it to
-     * get the raw pointer and call fread() directly. */
-
-    /* Placeholder: zero-length indicates EOF detection needs real impl */
-    return JS_NULL; /* return null to signal no data yet */
+    FILE *f = (FILE *)(uintptr_t)(unsigned int)fd;
+    n = fread(c_buf, 1, size, f);
+    if (n == 0) return JS_NULL;   /* EOF */
+    return js_new_uint8array(ctx, c_buf, n);
 }
 
 JSValue js_fs_write(JSContext *ctx, JSValue *this_val,
                     int argc, JSValue *argv)
 {
     /* FS.write(fd, buffer:Uint8Array, offset, length) → bytes_written */
-    (void)this_val; (void)argc; (void)argv;
-    return JS_NewInt32(ctx, 0);
+    int fd, offset, length;
+    uint8_t *buf;
+    size_t buf_len;
+    (void)this_val;
+    if (argc < 4 ||
+        get_int_arg(ctx, argv, 0, &fd)     ||
+        get_int_arg(ctx, argv, 2, &offset) ||
+        get_int_arg(ctx, argv, 3, &length))
+        return JS_EXCEPTION;
+    buf = js_get_uint8array_buf(ctx, argv[1], &buf_len);
+    if (!buf) return JS_ThrowTypeError(ctx, "FS.write: buffer must be Uint8Array");
+    if (offset < 0 || length < 0 || (size_t)(offset + length) > buf_len)
+        return JS_ThrowRangeError(ctx, "FS.write: offset/length out of bounds");
+    FILE *f = (FILE *)(uintptr_t)(unsigned int)fd;
+    int n = (int)fwrite(buf + offset, 1, (size_t)length, f);
+    return JS_NewInt32(ctx, n);
 }
 
 JSValue js_fs_seek(JSContext *ctx, JSValue *this_val,
