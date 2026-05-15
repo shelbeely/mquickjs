@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Build host tools and run tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc make
+
+      - name: Build mqjs host compiler
+        run: make mqjs
+
+      - name: Build xteink stdlib header
+        run: make xteink_stdlib.h
+
+      - name: Run existing test suite
+        run: make test
+
+      - name: Build full example binary
+        run: make example
+
+      - name: Verify example apps compile with --xteink
+        run: |
+          for f in examples/*.js; do
+            echo "=== Checking $f ==="
+            ./mqjs --xteink --check "$f"
+          done
+
+      - name: Compile example apps to .app bytecode
+        run: |
+          mkdir -p /tmp/apps
+          for f in examples/*.js; do
+            name=$(basename "$f" .js)
+            ./mqjs --xteink -o "/tmp/apps/${name}.app" "$f"
+            echo "  -> /tmp/apps/${name}.app"
+          done
+
+      - name: Verify compiled .app files are valid bytecode
+        run: |
+          for app in /tmp/apps/*.app; do
+            echo "Loading $app"
+            ./mqjs -b "$app"
+          done
+
+  firmware-build:
+    name: Build ESP32-C3 firmware (optional)
+    runs-on: ubuntu-latest
+    # Run only when IDF_VER env is available; mark as non-blocking
+    # Uncomment 'continue-on-error: false' once an IDF runner is configured.
+    continue-on-error: true
+    if: false   # Disabled until an ESP-IDF Docker runner is configured
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.2.0
+          target: esp32c3
+
+      - name: Generate xteink_stdlib.h on host
+        run: make xteink_stdlib.h
+
+      - name: Build firmware
+        working-directory: xteink
+        run: idf.py build
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xteink_firmware
+          path: xteink/build/*.bin
